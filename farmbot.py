@@ -1,4 +1,4 @@
-"""Telegram moderation bot for a specific supergroup chat."""
+"""Telegram moderation bot for Farm Together 2 community."""
 from __future__ import annotations
 
 import asyncio
@@ -33,17 +33,12 @@ from telegram.ext import (
 
 logger = logging.getLogger(__name__)
 
-
-DEFAULT_BANNED_WORDS: Final[tuple[str, ...]] = (
-    "spam",
-    "scam",
-    "fraud",
-)
+DEFAULT_BANNED_WORDS: Final[tuple[str, ...]] = ("spam", "scam", "fraud")
 
 
 @dataclass(slots=True, frozen=True)
 class Settings:
-    """Configuration for running the Telegram bot."""
+    """Runtime configuration for the bot."""
 
     token: str = "8302607798:AAHs5j6gBulehc4bTYs8OWpZmp8tIQm6VKk"
     chat_id: int = -1002122951481
@@ -53,15 +48,13 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        """Load settings from the environment."""
+        """Create settings using environment overrides."""
 
         defaults = cls()
-
         token = os.getenv("TELEGRAM_TOKEN") or defaults.token
         if not token:
-            raise RuntimeError(
-                "Environment variable TELEGRAM_TOKEN must be defined with the bot token"
-            )
+            msg = "Environment variable TELEGRAM_TOKEN must be defined with the bot token"
+            raise RuntimeError(msg)
 
         chat_id_env = os.getenv("TELEGRAM_CHAT_ID")
         chat_id = int(chat_id_env) if chat_id_env is not None else defaults.chat_id
@@ -87,7 +80,7 @@ class Settings:
 
 
 class BannedWordsManager:
-    """Manage the banned words list backed by a file."""
+    """File-backed banned words storage."""
 
     def __init__(
         self,
@@ -108,20 +101,15 @@ class BannedWordsManager:
         return word.strip().lower()
 
     async def initialize(self) -> None:
-        """Load the banned words from disk, creating the file if necessary."""
+        """Load banned words from disk."""
 
         await asyncio.to_thread(self._ensure_file_exists)
-        words = await asyncio.to_thread(self._read_words)
-        self._words = words
+        self._words = await asyncio.to_thread(self._read_words)
 
     def contains(self, text: str) -> bool:
-        """Return ``True`` if any banned word is present in ``text``."""
-
         return any(word in text for word in self._words)
 
     async def add_word(self, word: str) -> bool:
-        """Add ``word`` to the banned list. Returns ``True`` if added."""
-
         normalized = self._normalize(word)
         if not normalized:
             return False
@@ -133,8 +121,6 @@ class BannedWordsManager:
         return True
 
     async def remove_word(self, word: str) -> bool:
-        """Remove ``word`` from the banned list. Returns ``True`` if removed."""
-
         normalized = self._normalize(word)
         if not normalized:
             return False
@@ -154,13 +140,14 @@ class BannedWordsManager:
                 handle.write(f"{word}\n")
 
     def _read_words(self) -> set[str]:
+        if not self.path.exists():
+            return set()
         words: set[str] = set()
-        if self.path.exists():
-            with self.path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    normalized = self._normalize(line)
-                    if normalized:
-                        words.add(normalized)
+        with self.path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                normalized = self._normalize(line)
+                if normalized:
+                    words.add(normalized)
         return words
 
     def _write_words(self) -> None:
@@ -176,7 +163,7 @@ class FAQEntry:
 
 
 class FAQManager:
-    """Manage frequently asked questions stored in a JSON file."""
+    """Manage frequently asked questions stored on disk."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -189,29 +176,22 @@ class FAQManager:
 
     async def initialize(self) -> None:
         await asyncio.to_thread(self._ensure_file_exists)
-        entries = await asyncio.to_thread(self._read_entries)
-        self._entries = entries
+        self._entries = await asyncio.to_thread(self._read_entries)
 
     async def add_entry(self, question: str, answer: str) -> int | None:
-        """Add a new FAQ entry.
-
-        Returns the 1-based position of the added entry or ``None`` if the question
-        already exists or provided values are empty.
-        """
-
         normalized = self._normalize(question)
         if not normalized or not answer.strip():
             return None
         async with self._lock:
-            if any(self._normalize(entry.question) == normalized for entry in self._entries):
+            if any(self._normalize(item.question) == normalized for item in self._entries):
                 return None
-            self._entries.append(FAQEntry(question=question.strip(), answer=answer.strip()))
+            self._entries.append(
+                FAQEntry(question=question.strip(), answer=answer.strip())
+            )
             await asyncio.to_thread(self._write_entries)
             return len(self._entries)
 
     async def remove_entry(self, index: int) -> FAQEntry | None:
-        """Remove an entry by its 1-based index."""
-
         async with self._lock:
             if index < 1 or index > len(self._entries):
                 return None
@@ -256,40 +236,51 @@ class FAQManager:
                     and isinstance(item.get("answer"), str)
                 ):
                     entries.append(
-                        FAQEntry(question=item["question"].strip(), answer=item["answer"].strip())
+                        FAQEntry(
+                            question=item["question"].strip(),
+                            answer=item["answer"].strip(),
+                        )
                     )
         return entries
 
     def _write_entries(self) -> None:
-        data = [
+        payload = [
             {"question": entry.question, "answer": entry.answer}
             for entry in self._entries
         ]
         with self.path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
+def _get_settings(context: ContextTypes.DEFAULT_TYPE) -> Settings:
+    return context.application.bot_data["settings"]
+
+
+def _get_banned_words(context: ContextTypes.DEFAULT_TYPE) -> BannedWordsManager:
+    return context.application.bot_data["banned_words"]
+
+
+def _get_faq(context: ContextTypes.DEFAULT_TYPE) -> FAQManager:
+    return context.application.bot_data["faq"]
 
 
 def is_primary_admin(user: User | None, settings: Settings) -> bool:
-    """Return ``True`` when ``user`` matches the configured primary admin."""
-
     return bool(user and user.id == settings.primary_admin_id)
 
 
 async def delete_message(message: Message) -> None:
-    """Try to delete a Telegram message, ignoring failures."""
-
     try:
         await message.delete()
     except asyncio.CancelledError:
         raise
-    except TelegramError:  # pragma: no cover - best effort cleanup
-        logger.debug("Unable to delete message %s", message.message_id, exc_info=True)
+    except TelegramError:
+        logger.debug(
+            "Unable to delete message %s", message.message_id, exc_info=True
+        )
 
 
 def mention_list(users: Iterable[User]) -> str:
-    """Build a comma-separated list of HTML mentions."""
-
-    mentions = []
+    mentions: list[str] = []
     for user in users:
         display_name = user.full_name or user.username or "пользователь"
         mentions.append(mention_html(user.id, display_name))
@@ -297,8 +288,6 @@ def mention_list(users: Iterable[User]) -> str:
 
 
 async def delete_later(message: Message, delay: float) -> None:
-    """Delete ``message`` after ``delay`` seconds."""
-
     try:
         await asyncio.sleep(delay)
         with suppress(TelegramError):
@@ -308,23 +297,21 @@ async def delete_later(message: Message, delay: float) -> None:
 
 
 def is_target_chat(chat: Chat | None, target_chat_id: int) -> bool:
-    """Check that the update belongs to the configured supergroup chat."""
-
     if not chat:
         return False
     if chat.type in {ChatType.PRIVATE, ChatType.CHANNEL}:
         return False
-    is_target = chat.id == target_chat_id
-    if not is_target:
+    if chat.id != target_chat_id:
         logger.debug("Ignoring message from chat %s", chat.id)
-    return is_target
+        return False
+    return True
 
 
 async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     if not message or not message.new_chat_members:
         return
-    settings: Settings = context.application.settings  # type: ignore[attr-defined]
+    settings = _get_settings(context)
     if not is_target_chat(message.chat, settings.chat_id):
         return
 
@@ -341,7 +328,7 @@ async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "📌 Чтобы здесь было тепло и комфортно всем —\n"
         "будет чудесно, если ты сначала заглянешь в правила\n"
         "и пару слов скажешь в чат — мы любим знакомиться с новыми фермерами 💚\n\n"
-        "Устраивайся поудобнее, рассказывай о своей ферме,\n"
+        "Устраивайся поудобнее, рассказывай о своей ферме,"
         "и пусть каждый день приносит тебе хороший урожай 🌻✨"
     ).format(mentions=mention_list(message.new_chat_members))
     sent_message = await context.bot.send_message(
@@ -350,7 +337,14 @@ async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Правила 📚", url="https://telegra.ph/Pravila-chata-Farm-Together-2-11-04")]]
+            [
+                [
+                    InlineKeyboardButton(
+                        "Правила 📚",
+                        url="https://telegra.ph/Pravila-chata-Farm-Together-2-11-04",
+                    )
+                ]
+            ]
         ),
     )
     context.application.create_task(delete_later(sent_message, delay=300))
@@ -360,14 +354,12 @@ async def on_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = update.message
     if not message or not message.left_chat_member:
         return
-    settings: Settings = context.application.settings  # type: ignore[attr-defined]
+    settings = _get_settings(context)
     if not is_target_chat(message.chat, settings.chat_id):
         return
 
     await delete_message(message)
-    farewell = "{mentions} покинул(а) чат.".format(
-        mentions=mention_list([message.left_chat_member])
-    )
+    farewell = f"{mention_list([message.left_chat_member])} покинул(а) чат."
     await context.bot.send_message(chat_id=message.chat_id, text=farewell)
 
 
@@ -375,7 +367,7 @@ async def on_service_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     message = update.message
     if not message:
         return
-    settings: Settings = context.application.settings  # type: ignore[attr-defined]
+    settings = _get_settings(context)
     if not is_target_chat(message.chat, settings.chat_id):
         return
     await delete_message(message)
@@ -387,71 +379,66 @@ async def handle_banned_word_commands(
     settings: Settings,
     banned_words: BannedWordsManager,
 ) -> bool:
-    """Handle admin commands to manage banned words."""
-
     text = message.text or ""
     stripped = text.strip()
-    lowered = stripped.lower()
-
     if not stripped:
         return False
 
     parts = stripped.split(maxsplit=1)
-    command, argument = parts[0].lower(), parts[1].strip() if len(parts) > 1 else ""
+    command = parts[0].lower()
+    argument = parts[1].strip() if len(parts) > 1 else ""
 
-    match command:
-        case "запретить":
-            if not is_primary_admin(message.from_user, settings):
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Команда доступна только главному администратору.",
-                )
-                return True
-            if not argument:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Укажите слово для добавления в список запрещённых.",
-                )
-                return True
-            added = await banned_words.add_word(argument)
-            if added:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text=f"Слово «{argument}» добавлено в список запрещённых.",
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text=f"Слово «{argument}» уже находится в списке запрещённых.",
-                )
+    if command == "запретить":
+        if not is_primary_admin(message.from_user, settings):
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Команда доступна только главному администратору.",
+            )
             return True
-        case "разрешить":
-            if not is_primary_admin(message.from_user, settings):
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Команда доступна только главному администратору.",
-                )
-                return True
-            if not argument:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Укажите слово для удаления из списка запрещённых.",
-                )
-                return True
-            removed = await banned_words.remove_word(argument)
-            if removed:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text=f"Слово «{argument}» удалено из списка запрещённых.",
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text=f"Слова «{argument}» нет в списке запрещённых.",
-                )
+        if not argument:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Укажите слово для добавления в список запрещённых.",
+            )
             return True
-        case _:
-            return False
+        if await banned_words.add_word(argument):
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=f"Слово «{argument}» добавлено в список запрещённых.",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=f"Слово «{argument}» уже находится в списке запрещённых.",
+            )
+        return True
+
+    if command == "разрешить":
+        if not is_primary_admin(message.from_user, settings):
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Команда доступна только главному администратору.",
+            )
+            return True
+        if not argument:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Укажите слово для удаления из списка запрещённых.",
+            )
+            return True
+        if await banned_words.remove_word(argument):
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=f"Слово «{argument}» удалено из списка запрещённых.",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=f"Слова «{argument}» нет в списке запрещённых.",
+            )
+        return True
+
+    return False
 
 
 async def handle_faq_commands(
@@ -460,130 +447,123 @@ async def handle_faq_commands(
     settings: Settings,
     faq: FAQManager,
 ) -> bool:
-    """Handle primary admin commands for managing FAQ entries."""
-
     text = message.text or ""
     lines = text.splitlines()
     if not lines:
         return False
 
     command = lines[0].strip().lower()
-
-    match command:
-        case "+чаво":
-            if not is_primary_admin(message.from_user, settings):
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Команда доступна только главному администратору.",
-                )
-                return True
-            if len(lines) < 3:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text=(
-                        "Использование: +чаво\nвопрос\nответ."
-                        " Убедитесь, что указаны и вопрос, и ответ."
-                    ),
-                )
-                return True
-            question = lines[1].strip()
-            answer = "\n".join(lines[2:]).strip()
-            if not question or not answer:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Вопрос и ответ не должны быть пустыми.",
-                )
-                return True
-            position = await faq.add_entry(question, answer)
-            if position is not None:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text=f"Вопрос добавлен под номером {position}.",
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Такой вопрос уже существует в списке.",
-                )
-            return True
-        case "чаво" if len(lines) == 1:
-            if not is_primary_admin(message.from_user, settings):
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Команда доступна только главному администратору.",
-                )
-                return True
-            questions = faq.list_questions()
-            if not questions:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Список вопросов пуст.",
-                )
-                return True
-            lines_to_send = [
-                f"{idx}. {question}" for idx, question in enumerate(questions, start=1)
-            ]
-            await context.bot.send_message(
-                chat_id=message.chat_id, text="\n".join(lines_to_send)
-            )
-            return True
-        case _ if command.startswith("-чаво"):
-            if not is_primary_admin(message.from_user, settings):
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Команда доступна только главному администратору.",
-                )
-                return True
-            number_text = ""
-            parts = command.split(maxsplit=1)
-            if len(parts) > 1:
-                number_text = parts[1].strip()
-            elif len(lines) > 1:
-                number_text = lines[1].strip()
-            if not number_text:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Укажите номер вопроса для удаления.",
-                )
-                return True
-            try:
-                index = int(number_text)
-            except ValueError:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Номер вопроса должен быть числом.",
-                )
-                return True
-            removed = await faq.remove_entry(index)
-            if removed is None:
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text="Вопрос с таким номером не найден.",
-                )
-                return True
+    if command == "+чаво":
+        if not is_primary_admin(message.from_user, settings):
             await context.bot.send_message(
                 chat_id=message.chat_id,
-                text=f"Вопрос «{removed.question}» удалён.",
+                text="Команда доступна только главному администратору.",
             )
             return True
-        case _:
-            return False
+        if len(lines) < 3:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=(
+                    "Использование: +чаво\nвопрос\nответ. "
+                    "Убедитесь, что указаны и вопрос, и ответ."
+                ),
+            )
+            return True
+        question = lines[1].strip()
+        answer = "\n".join(lines[2:]).strip()
+        if not question or not answer:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Вопрос и ответ не должны быть пустыми.",
+            )
+            return True
+        position = await faq.add_entry(question, answer)
+        if position is None:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Такой вопрос уже существует в списке.",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=f"Вопрос добавлен под номером {position}.",
+            )
+        return True
+
+    if command == "чаво" and len(lines) == 1:
+        if not is_primary_admin(message.from_user, settings):
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Команда доступна только главному администратору.",
+            )
+            return True
+        questions = faq.list_questions()
+        if not questions:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Список вопросов пуст.",
+            )
+            return True
+        listing = [f"{idx}. {question}" for idx, question in enumerate(questions, start=1)]
+        await context.bot.send_message(chat_id=message.chat_id, text="\n".join(listing))
+        return True
+
+    if command.startswith("-чаво"):
+        if not is_primary_admin(message.from_user, settings):
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Команда доступна только главному администратору.",
+            )
+            return True
+        number_text = ""
+        parts = command.split(maxsplit=1)
+        if len(parts) > 1:
+            number_text = parts[1].strip()
+        elif len(lines) > 1:
+            number_text = lines[1].strip()
+        if not number_text:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Укажите номер вопроса для удаления.",
+            )
+            return True
+        try:
+            index = int(number_text)
+        except ValueError:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Номер вопроса должен быть числом.",
+            )
+            return True
+        removed = await faq.remove_entry(index)
+        if removed is None:
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text="Вопрос с таким номером не найден.",
+            )
+            return True
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=f"Вопрос «{removed.question}» удалён.",
+        )
+        return True
+
+    return False
 
 
 async def moderate_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     if not message or not message.text:
         return
-    settings: Settings = context.application.settings  # type: ignore[attr-defined]
+    settings = _get_settings(context)
     if not is_target_chat(message.chat, settings.chat_id):
         return
 
-    banned_words: BannedWordsManager = context.application.banned_words_manager  # type: ignore[attr-defined]
-    faq: FAQManager = context.application.faq_manager  # type: ignore[attr-defined]
+    banned_words = _get_banned_words(context)
+    faq = _get_faq(context)
 
     if await handle_banned_word_commands(message, context, settings, banned_words):
         return
-
     if await handle_faq_commands(message, context, settings, faq):
         return
 
@@ -592,36 +572,34 @@ async def moderate_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await context.bot.send_message(chat_id=message.chat_id, text=answer)
         return
 
-    lowered = message.text.lower()
     if is_primary_admin(message.from_user, settings):
         return
 
-    if banned_words.contains(lowered):
+    if banned_words.contains(message.text.lower()):
         await delete_message(message)
         await context.bot.send_message(
             chat_id=message.chat_id,
             text=(
-                "Сообщение пользователя удалено из-за нарушения правил."
-                " Пожалуйста, избегайте запрещённых слов."
+                "Сообщение пользователя удалено из-за нарушения правил. "
+                "Пожалуйста, избегайте запрещённых слов."
             ),
         )
 
 
 async def on_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat:
+    chat = update.effective_chat
+    if not chat:
         return
-    settings: Settings = context.application.settings  # type: ignore[attr-defined]
-    if not is_target_chat(update.effective_chat, settings.chat_id):
+    settings = _get_settings(context)
+    if not is_target_chat(chat, settings.chat_id):
         return
-
     if not is_primary_admin(update.effective_user, settings):
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat.id,
             text="Команда доступна только главному администратору.",
         )
         return
-
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ Бот активен")
+    await context.bot.send_message(chat_id=chat.id, text="✅ Бот активен")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -629,16 +607,23 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def build_application(
-    settings: Settings, banned_words: BannedWordsManager, faq: FAQManager
+    settings: Settings,
+    banned_words: BannedWordsManager,
+    faq: FAQManager,
 ) -> Application:
     application = ApplicationBuilder().token(settings.token).build()
-    application.settings = settings  # type: ignore[attr-defined]
-    application.banned_words_manager = banned_words  # type: ignore[attr-defined]
-    application.faq_manager = faq  # type: ignore[attr-defined]
+
+    application.bot_data["settings"] = settings
+    application.bot_data["banned_words"] = banned_words
+    application.bot_data["faq"] = faq
 
     application.add_handler(CommandHandler("ping", on_ping))
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_new_members))
-    application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, on_member_left))
+    application.add_handler(
+        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_new_members)
+    )
+    application.add_handler(
+        MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, on_member_left)
+    )
     application.add_handler(
         MessageHandler(
             filters.StatusUpdate.ALL
@@ -653,27 +638,37 @@ def build_application(
 
 
 async def _initialize_resources(
-    banned_words: BannedWordsManager, faq: FAQManager
+    banned_words: BannedWordsManager,
+    faq: FAQManager,
 ) -> None:
-    async with asyncio.TaskGroup() as task_group:
-        task_group.create_task(banned_words.initialize())
-        task_group.create_task(faq.initialize())
+    async with asyncio.TaskGroup() as group:
+        group.create_task(banned_words.initialize())
+        group.create_task(faq.initialize())
 
 
-def run_bot() -> None:
+async def run_bot() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings.from_env()
     banned_words = BannedWordsManager(settings.banned_words_file)
     faq = FAQManager(settings.faq_file)
-    asyncio.run(_initialize_resources(banned_words, faq))
+
+    await _initialize_resources(banned_words, faq)
     application = build_application(settings, banned_words, faq)
 
     logger.info("Bot started and monitoring chat %s", settings.chat_id)
-    application.run_polling(stop_signals=None, close_loop=False)
+
+    async with application:
+        await application.start()
+        await application.updater.start_polling()
+        try:
+            await application.updater.idle()
+        finally:
+            await application.updater.stop()
+            await application.stop()
 
 
 def main() -> None:
-    run_bot()
+    asyncio.run(run_bot())
 
 
 if __name__ == "__main__":

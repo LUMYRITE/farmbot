@@ -55,19 +55,28 @@ class Settings:
     def from_env(cls) -> "Settings":
         """Load settings from the environment."""
 
-        token = os.getenv("TELEGRAM_TOKEN", cls.token)
+        defaults = cls()
+
+        token = os.getenv("TELEGRAM_TOKEN") or defaults.token
         if not token:
             raise RuntimeError(
                 "Environment variable TELEGRAM_TOKEN must be defined with the bot token"
             )
-        chat_id = int(os.getenv("TELEGRAM_CHAT_ID", cls.chat_id))
-        primary_admin_id = int(
-            os.getenv("TELEGRAM_PRIMARY_ADMIN_ID", cls.primary_admin_id)
+
+        chat_id_env = os.getenv("TELEGRAM_CHAT_ID")
+        chat_id = int(chat_id_env) if chat_id_env is not None else defaults.chat_id
+
+        primary_admin_env = os.getenv("TELEGRAM_PRIMARY_ADMIN_ID")
+        primary_admin_id = (
+            int(primary_admin_env)
+            if primary_admin_env is not None
+            else defaults.primary_admin_id
         )
+
         banned_words_file = os.getenv(
-            "TELEGRAM_BANNED_WORDS_FILE", cls.banned_words_file
+            "TELEGRAM_BANNED_WORDS_FILE", defaults.banned_words_file
         )
-        faq_file = os.getenv("TELEGRAM_FAQ_FILE", cls.faq_file)
+        faq_file = os.getenv("TELEGRAM_FAQ_FILE", defaults.faq_file)
         return cls(
             token=token,
             chat_id=chat_id,

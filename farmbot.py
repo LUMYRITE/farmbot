@@ -661,7 +661,7 @@ async def run_bot() -> None:
         await application.start()
         await application.updater.start_polling()
         try:
-            await application.updater.idle()
+            await application.updater.wait_until_closed()
         finally:
             await application.updater.stop()
             await application.stop()

@@ -5,9 +5,11 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Final
 
 from telegram import (
     Chat,
@@ -18,20 +20,28 @@ from telegram import (
     User,
 )
 from telegram.constants import ChatType, ParseMode
+from telegram.error import TelegramError
 from telegram.helpers import mention_html
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_BANNED_WORDS: tuple[str, ...] = (
+DEFAULT_BANNED_WORDS: Final[tuple[str, ...]] = (
     "spam",
     "scam",
     "fraud",
 )
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True, frozen=True)
 class Settings:
     """Configuration for running the Telegram bot."""
 
@@ -150,7 +160,7 @@ class BannedWordsManager:
                 handle.write(f"{word}\n")
 
 
-@dataclass
+@dataclass(slots=True)
 class FAQEntry:
     question: str
     answer: str
@@ -261,7 +271,9 @@ async def delete_message(message: Message) -> None:
 
     try:
         await message.delete()
-    except Exception:  # pragma: no cover - best effort cleanup
+    except asyncio.CancelledError:
+        raise
+    except TelegramError:  # pragma: no cover - best effort cleanup
         logger.debug("Unable to delete message %s", message.message_id, exc_info=True)
 
 
@@ -280,11 +292,10 @@ async def delete_later(message: Message, delay: float) -> None:
 
     try:
         await asyncio.sleep(delay)
-        await message.delete()
-    except Exception:  # pragma: no cover - best effort cleanup
-        logger.debug(
-            "Unable to delete message %s after delay", message.message_id, exc_info=True
-        )
+        with suppress(TelegramError):
+            await message.delete()
+    except asyncio.CancelledError:
+        raise
 
 
 def is_target_chat(chat: Chat | None, target_chat_id: int) -> bool:
@@ -373,67 +384,65 @@ async def handle_banned_word_commands(
     stripped = text.strip()
     lowered = stripped.lower()
 
-    if lowered.startswith("запретить"):
-        parts = stripped.split(maxsplit=1)
-        if not parts or parts[0].lower() != "запретить":
-            return False
-        word = parts[1].strip() if len(parts) > 1 else ""
-        if not is_primary_admin(message.from_user, settings):
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Команда доступна только главному администратору.",
-            )
-            return True
-        if not word:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Укажите слово для добавления в список запрещённых.",
-            )
-            return True
-        added = await banned_words.add_word(word)
-        if added:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=f"Слово «{word}» добавлено в список запрещённых.",
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=f"Слово «{word}» уже находится в списке запрещённых.",
-            )
-        return True
+    if not stripped:
+        return False
 
-    if lowered.startswith("разрешить"):
-        parts = stripped.split(maxsplit=1)
-        if not parts or parts[0].lower() != "разрешить":
-            return False
-        word = parts[1].strip() if len(parts) > 1 else ""
-        if not is_primary_admin(message.from_user, settings):
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Команда доступна только главному администратору.",
-            )
-            return True
-        if not word:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Укажите слово для удаления из списка запрещённых.",
-            )
-            return True
-        removed = await banned_words.remove_word(word)
-        if removed:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=f"Слово «{word}» удалено из списка запрещённых.",
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=f"Слова «{word}» нет в списке запрещённых.",
-            )
-        return True
+    parts = stripped.split(maxsplit=1)
+    command, argument = parts[0].lower(), parts[1].strip() if len(parts) > 1 else ""
 
-    return False
+    match command:
+        case "запретить":
+            if not is_primary_admin(message.from_user, settings):
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Команда доступна только главному администратору.",
+                )
+                return True
+            if not argument:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Укажите слово для добавления в список запрещённых.",
+                )
+                return True
+            added = await banned_words.add_word(argument)
+            if added:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=f"Слово «{argument}» добавлено в список запрещённых.",
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=f"Слово «{argument}» уже находится в списке запрещённых.",
+                )
+            return True
+        case "разрешить":
+            if not is_primary_admin(message.from_user, settings):
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Команда доступна только главному администратору.",
+                )
+                return True
+            if not argument:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Укажите слово для удаления из списка запрещённых.",
+                )
+                return True
+            removed = await banned_words.remove_word(argument)
+            if removed:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=f"Слово «{argument}» удалено из списка запрещённых.",
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=f"Слова «{argument}» нет в списке запрещённых.",
+                )
+            return True
+        case _:
+            return False
 
 
 async def handle_faq_commands(
@@ -451,104 +460,105 @@ async def handle_faq_commands(
 
     command = lines[0].strip().lower()
 
-    if command == "+чаво":
-        if not is_primary_admin(message.from_user, settings):
+    match command:
+        case "+чаво":
+            if not is_primary_admin(message.from_user, settings):
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Команда доступна только главному администратору.",
+                )
+                return True
+            if len(lines) < 3:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=(
+                        "Использование: +чаво\nвопрос\nответ."
+                        " Убедитесь, что указаны и вопрос, и ответ."
+                    ),
+                )
+                return True
+            question = lines[1].strip()
+            answer = "\n".join(lines[2:]).strip()
+            if not question or not answer:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Вопрос и ответ не должны быть пустыми.",
+                )
+                return True
+            position = await faq.add_entry(question, answer)
+            if position is not None:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=f"Вопрос добавлен под номером {position}.",
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Такой вопрос уже существует в списке.",
+                )
+            return True
+        case "чаво" if len(lines) == 1:
+            if not is_primary_admin(message.from_user, settings):
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Команда доступна только главному администратору.",
+                )
+                return True
+            questions = faq.list_questions()
+            if not questions:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Список вопросов пуст.",
+                )
+                return True
+            lines_to_send = [
+                f"{idx}. {question}" for idx, question in enumerate(questions, start=1)
+            ]
             await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Команда доступна только главному администратору.",
+                chat_id=message.chat_id, text="\n".join(lines_to_send)
             )
             return True
-        if len(lines) < 3:
+        case _ if command.startswith("-чаво"):
+            if not is_primary_admin(message.from_user, settings):
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Команда доступна только главному администратору.",
+                )
+                return True
+            number_text = ""
+            parts = command.split(maxsplit=1)
+            if len(parts) > 1:
+                number_text = parts[1].strip()
+            elif len(lines) > 1:
+                number_text = lines[1].strip()
+            if not number_text:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Укажите номер вопроса для удаления.",
+                )
+                return True
+            try:
+                index = int(number_text)
+            except ValueError:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Номер вопроса должен быть числом.",
+                )
+                return True
+            removed = await faq.remove_entry(index)
+            if removed is None:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text="Вопрос с таким номером не найден.",
+                )
+                return True
             await context.bot.send_message(
                 chat_id=message.chat_id,
-                text=(
-                    "Использование: +чаво\nвопрос\nответ."
-                    " Убедитесь, что указаны и вопрос, и ответ."
-                ),
+                text=f"Вопрос «{removed.question}» удалён.",
             )
             return True
-        question = lines[1].strip()
-        answer = "\n".join(lines[2:]).strip()
-        if not question or not answer:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Вопрос и ответ не должны быть пустыми.",
-            )
-            return True
-        position = await faq.add_entry(question, answer)
-        if position is not None:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=f"Вопрос добавлен под номером {position}.",
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Такой вопрос уже существует в списке.",
-            )
-        return True
-
-    if command == "чаво" and len(lines) == 1:
-        if not is_primary_admin(message.from_user, settings):
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Команда доступна только главному администратору.",
-            )
-            return True
-        questions = faq.list_questions()
-        if not questions:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Список вопросов пуст.",
-            )
-            return True
-        lines = [f"{idx}. {question}" for idx, question in enumerate(questions, start=1)]
-        await context.bot.send_message(chat_id=message.chat_id, text="\n".join(lines))
-        return True
-
-    if command.startswith("-чаво"):
-        parts = command.split(maxsplit=1)
-        if not parts or parts[0] != "-чаво":
+        case _:
             return False
-        if not is_primary_admin(message.from_user, settings):
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Команда доступна только главному администратору.",
-            )
-            return True
-        number_text = ""
-        if len(parts) > 1:
-            number_text = parts[1].strip()
-        elif len(lines) > 1:
-            number_text = lines[1].strip()
-        if not number_text:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Укажите номер вопроса для удаления.",
-            )
-            return True
-        try:
-            index = int(number_text)
-        except ValueError:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Номер вопроса должен быть числом.",
-            )
-            return True
-        removed = await faq.remove_entry(index)
-        if removed is None:
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text="Вопрос с таким номером не найден.",
-            )
-            return True
-        await context.bot.send_message(
-            chat_id=message.chat_id,
-            text=f"Вопрос «{removed.question}» удалён.",
-        )
-        return True
-
-    return False
 
 
 async def moderate_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -637,9 +647,10 @@ async def run_bot() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings.from_env()
     banned_words = BannedWordsManager(settings.banned_words_file)
-    await banned_words.initialize()
     faq = FAQManager(settings.faq_file)
-    await faq.initialize()
+    async with asyncio.TaskGroup() as task_group:
+        task_group.create_task(banned_words.initialize())
+        task_group.create_task(faq.initialize())
     application = build_application(settings, banned_words, faq)
 
     logger.info("Bot started and monitoring chat %s", settings.chat_id)

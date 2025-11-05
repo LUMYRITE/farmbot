@@ -652,22 +652,28 @@ def build_application(
     return application
 
 
-async def run_bot() -> None:
+async def _initialize_resources(
+    banned_words: BannedWordsManager, faq: FAQManager
+) -> None:
+    async with asyncio.TaskGroup() as task_group:
+        task_group.create_task(banned_words.initialize())
+        task_group.create_task(faq.initialize())
+
+
+def run_bot() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings.from_env()
     banned_words = BannedWordsManager(settings.banned_words_file)
     faq = FAQManager(settings.faq_file)
-    async with asyncio.TaskGroup() as task_group:
-        task_group.create_task(banned_words.initialize())
-        task_group.create_task(faq.initialize())
+    asyncio.run(_initialize_resources(banned_words, faq))
     application = build_application(settings, banned_words, faq)
 
     logger.info("Bot started and monitoring chat %s", settings.chat_id)
-    await application.run_polling(stop_signals=None, close_loop=False)
+    application.run_polling(stop_signals=None, close_loop=False)
 
 
 def main() -> None:
-    asyncio.run(run_bot())
+    run_bot()
 
 
 if __name__ == "__main__":
